@@ -1,0 +1,245 @@
+---
+title: "Preparing data"
+author: "Bennour MH"
+output: 
+    prettydoc::html_pretty:
+    theme: lumen
+    highlight: github
+    html_document:
+      keep_md: true
+editor_options: 
+  chunk_output_type: console
+---
+
+
+This is part of the competition of held by the AI_hack in tunisia 2019, the data is form the Tunisian ministry of finance, and the objective is to detect fraudulent tax returns, depending on the variables presented in the data.
+
+This work has not been uploaded nor submitted, this just a mere sharing of what I am learning and trying to do.
+[here's the link for the competition in zindi](https://zindi.africa/competitions/ai-hack-tunisia-6-predictive-analytics-challenge-3)
+
+PS: this notebook only include preprocessing, visualization, and cleaning steps, predicting is going to be done in a another python notebook.
+I hope that you find this helpfull, your feedback would be appreciated.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r include=FALSE}
+setwd("~/Rprojects/tax_fraud/ahawa/")
+```
+
+Let's load our toolbox
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+library(tidyverse)
+library(tidymodels)
+library(caret)
+```
+
+```{r}
+#import data 
+
+train <- read_csv("~/Rprojects/tax_fraud/train.csv") 
+test <- read_csv("~/Rprojects/tax_fraud/test.csv")
+```
+
+```{r eval=FALSE, include=FALSE}
+train %>% str()
+test %>% str()
+```
+
+## Exploring the data
+
+**missing values**
+
+Let's take a look on how much MV we have.
+We will explore, and treat them as we proceed in the analysis.
+```{r}
+# is there any missing values in the data set.?
+
+train %>% 
+  is.na %>% 
+  sum 
+```
+
+**target variable**
+
+```{r}
+# let's see what is the target variable and how it is distributed
+# 0 is for the non fraudulent object, else have to adjust their tax returns
+
+train %>%
+  ggplot(aes(x = target)) + 
+  geom_histogram(bins = 35) 
+
+train %>% 
+  pull(target) %>%
+  as.factor() %>%
+  table %>% as_tibble() 
+```
+
+* we need to note that:
+ + there are mainly 2 categories in the data
+    - 0 & approximation to 0 :
+    as seen in the last table, we have some values that are close to zero, I'd like to consider the objects of these values non fraudulent too.
+    - Non 0:
+    we can see that in the plot above, we have the non fraudulent distribution on the left, as one high bar in 0, and 18 more values in the approximation (<1), and the rest are normally shaped.
+    
+what is needed to be done, is to study more the distribution of the fraudulent and non fraudulent subjects, in accordance with other variables pricesly: CTR_CATEGO_X
+
+```{r}
+
+train %>% 
+  select(target, CTR_CATEGO_X) %>%
+  filter(target < 5) %>% 
+  ggplot(aes(x = target, fill = CTR_CATEGO_X)) + 
+  geom_histogram(stat = "count") +
+  labs(title = "distribution of non fraudulent subjects\n to the taxation categories")
+
+train %>% 
+  select(target, CTR_CATEGO_X) %>%
+  filter(target > 4) %>%
+  ggplot(aes(x = target, fill = CTR_CATEGO_X)) + 
+  geom_histogram() +
+  geom_vline(aes(xintercept = mean(target))) +
+  labs(title = "distribution of fraudulent subjects\n to the taxation categories")
+
+```
+
+Deeper look into MVs:
+
+```{r}
+# look for NAs  in each variable
+
+train %>% 
+  sapply(., is.na) %>%
+  as_tibble() %>%
+  sapply(., sum) %>% 
+  table() %>% as_tibble()
+
+```
+
+We just are trying to figure, why do we have these MVs, and how do they behave, the imputation is going to be the last step.
+
+```{r}
+# how are these MVs are distributed across the rows in the data.?
+
+train %>% 
+  mutate(na_rsum = rowSums(is.na(.))) %>%
+  select(na_rsum) %>% 
+  ggplot(aes(x = na_rsum)) + 
+  geom_histogram()
+
+train %>% 
+  mutate(na_rsum = rowSums(is.na(.))) %>%
+  filter(na_rsum == 0)
+
+```
+
+we will start by analyzing the structure of the data.
+I always try to find the different types of data first, in this case, having 100+ variables, it isn't efficient to use str().
+
+```{r}
+# How much characters as variables do we have.?
+
+train %>% 
+  select_if(is.character) %>%
+  ncol()
+
+# How much numerical variables do we have.?
+
+train %>% 
+  select_if(is.numeric) %>%
+  ncol()
+```
+
+Another issue, that I always try to follow it, is the missing values issue, because the ammout of missing values and the strategy we use to impute is crucuial for a generalized model.
+
+```{r}
+# total number of cases 
+
+ncol(train) * nrow(train)
+ncol(test) * nrow(test)
+
+# How much MVs do we have in training set.?
+
+train %>% 
+  is.na() %>%
+  sum() / 3031413
+
+# Do we have the same thing in the test set.?
+test %>% 
+  is.na() %>%
+  sum() / 1288560
+```
+
+We have almost the same rate of missing values, that is 27% for the train and the test set. 
+this means that we need to pay attention to the imputation strategy later on.
+
+```{r}
+# this helps viewthe structure of the regression later on.
+
+train %>%
+  recipe(target ~.) %>%
+  summary() 
+```
+
+* Final steps:
+  + removing the zero variance variables
+  + knn imputing
+  + and min_max normalization of the data
+
+```{r}
+# zero variance variables removal
+
+zv <- train %>% nearZeroVar(saveMetrics = T)
+
+zvc <- train[,zv$zeroVar == T] %>% colnames()
+
+train_1 <- train %>% select(-zvc)
+
+# Knn imputation, and min_max normalization
+
+df_1 <- train_1 %>%
+  preProcess(., method = c("knnImpute", "range")) %>%
+  predict(., train) 
+
+# One hot encoding of the CTR_CATEGO_X
+
+df <- df_1 %>% 
+  select(CTR_CATEGO_X) %>% 
+  dummyVars(~., data = .) %>% 
+  predict(., df_1) %>% 
+  as_tibble() %>%
+  bind_cols(df_1) %>% 
+  select(-CTR_CATEGO_X, -id)
+```
+
+Dividing the data for inhouse train and test data for local evaluation.
+
+```{r}
+set.seed(27)
+i <- createDataPartition(df$target, times = 1, p = .75, list = F)
+train_set <- df[i, ]
+test_set <- df[-i, ]
+
+y1 <- train_set$target
+y2 <- test_set$target
+```
+
+writing out the new test and train sets for local predictions
+
+```{r}
+write_csv(train_set, "~/Rprojects/tax_fraud/ahawa/tmp_train.csv")
+write_csv(test_set, "~/Rprojects/tax_fraud/ahawa/tmp_test.csv")
+```
+
+
+## Final thoughts:
+
+I tried to use a tidy approach to the code used in this little analysis, alot of work remain to improve the techniques and the speed in conducting such a notebook. Quality is also an important issue, that needs some improvement.
+Looking forward for your feedbacks and remarques.
+
+
+
+
